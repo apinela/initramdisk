@@ -1,0 +1,99 @@
+#!/bin/sh
+
+# Create all the symlinks to /bin/busybox
+/bin/busybox --install -s /bin/
+
+# Create dir structure needed for sys a proc mounts
+mkdir -p /proc
+mkdir -p /sys
+
+# Mount things needed by this script
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+
+# Create device nodes
+mdev -s
+
+# Disable kernel messages from popping onto the screen
+echo 0 > /proc/sys/kernel/printk
+
+# Clear the screen
+clear
+
+# Default paths
+init="/sbin/init"
+root="LABEL=/"
+boot="LABEL=/boot"
+home="LABEL=/home"
+oldrootfs_path="/mnt/home/oldrootfs.tgz"
+newrootfs_path="/mnt/home/newrootfs.tgz"
+
+# Function for parsing command line options
+parse_kernel_cmdline() {
+	echo "$@" | cut -d "=" -f 2
+}
+
+# Process command line options
+#for i in $(cat /proc/cmdline); do
+#	case $i in
+#		init\=*)
+#			init=$(parse_kernel_cmdline $i)
+#			;;
+#		boot\=*)
+#			boot=$(parse_kernel_cmdline $i)
+#			;;
+#		root\=*)
+#			root=$(parse_kernel_cmdline $i)
+#			;;
+#		home\=*)
+#			home=$(parse_kernel_cmdline $i)
+#			;;
+#	esac
+#done
+
+# Mount working partitions
+echo "Mounting root, boot and home partitions..."
+mkdir -p /mnt/root/boot
+mkdir -p /mnt/home
+mount "${root}" /mnt/root
+mount "${boot}" /mnt/root/boot
+mount "${home}" /mnt/home
+
+# Backup old rootfs
+echo "Backing up old rootfs..."
+cd /mnt/root/
+#tar czf "${oldrootfs_path}" .
+cd /
+
+# Wipe root partition
+echo "Wipping root and boot partition..."
+rm -rf /mnt/root/boot/*
+umount /mnt/root/boot
+rm -rf /mnt/root/*
+mkdir -p /mnt/root/boot
+mount "${boot}" /mnt/root/boot
+
+# Install the new rootfs
+echo "Installing the new rootfs..."
+tar zxf "${newrootfs_path}" -C /mnt/root
+
+# Post migration steps
+mount --bind /dev /mnt/root/dev
+mount --bind /proc /mnt/root/proc
+mount --bind /sys /mnt/root/sys
+chroot /mnt/root grub-install /dev/sda
+chroot /mnt/root update-grub
+#TODO: Migrate IP's, HOSTNAME, etc...
+
+#Unmount all other mounts so that the ram used by
+umount /mnt/root/dev /mnt/root/proc /mnt/root/sys /mnt/root/boot 2>&1 > /dev/null
+umount /mnt/root /mnt/home 2>&1 > /dev/null
+
+echo "Rebooting..."
+sleep 2
+echo 1 > /proc/sys/kernel/sysrq
+echo b > /proc/sysrq-trigger
+
+#This will only be run if the exec above failed
+#echo "Failed to switch_root, dropping to a shell"
+#exec /bin/init
