@@ -20,13 +20,17 @@ echo 0 > /proc/sys/kernel/printk
 # Clear the screen
 clear
 
-# Default paths
+# Defaults
 init="/sbin/init"
 root="LABEL=/"
-boot="LABEL=/boot"
 home="LABEL=/home"
 oldrootfs_path="/mnt/home/oldrootfs.tgz"
-newrootfs_path="/mnt/home/newrootfs.tgz"
+newrootfs_path="/mnt/home/centos-image.tgz"
+backup_oldrootfs="false"
+
+# Create needed mounting points
+mkdir -p /mnt/root/boot
+mkdir -p /mnt/home
 
 # Function for parsing command line options
 parse_kernel_cmdline() {
@@ -34,36 +38,50 @@ parse_kernel_cmdline() {
 }
 
 # Process command line options
-#for i in $(cat /proc/cmdline); do
-#	case $i in
-#		init\=*)
-#			init=$(parse_kernel_cmdline $i)
-#			;;
-#		boot\=*)
-#			boot=$(parse_kernel_cmdline $i)
-#			;;
-#		root\=*)
-#			root=$(parse_kernel_cmdline $i)
-#			;;
-#		home\=*)
-#			home=$(parse_kernel_cmdline $i)
-#			;;
-#	esac
-#done
+for i in $(cat /proc/cmdline); do
+	case $i in
+		init\=*)
+			init=$(parse_kernel_cmdline $i)
+			;;
+		root\=*)
+			root=$(parse_kernel_cmdline $i)
+			;;
+		home\=*)
+			home=$(parse_kernel_cmdline $i)
+			;;
+		backup_oldrootfs)
+			backup_oldrootfs="true"
+			;;
+	esac
+done
 
 # Mount working partitions
-echo "Mounting root, boot and home partitions..."
-mkdir -p /mnt/root/boot
-mkdir -p /mnt/home
+echo "Mounting root and home partitions..."
 mount "${root}" /mnt/root
-mount "${boot}" /mnt/root/boot
 mount "${home}" /mnt/home
 
+# Read oldroofs boot partition
+echo "Reading boot partition label from oldrootfs fstab..."
+boot=`grep "boot" /mnt/root/etc/fstab | cut -d' ' -f1`
+echo "Mounting boot partition: ${boot}..."
+mount "${boot}" /mnt/root/boot
+
 # Backup old rootfs
-echo "Backing up old rootfs..."
-cd /mnt/root/
-#tar czf "${oldrootfs_path}" .
-cd /
+if [ "${backup_oldrootfs}" = "true" ]
+then
+	echo "Backing up old rootfs..."
+	cd /mnt/root/
+	tar czf "${oldrootfs_path}" .
+	cd /
+fi
+
+# Backup fstab, network interfaces and hostname
+echo "Backing up oldrootfs configs..."
+mkdir -p /backup
+cp -v /mnt/root/etc/fstab /backup/
+cp -v /mnt/root/etc/sysconfig/network-scripts/ifcfg-eth0 /backup/
+cp -v /mnt/root/etc/sysconfig/network-scripts/ifcfg-eth1 /backup/
+cp -v /mnt/root/etc/sysconfig/network /backup/
 
 # Wipe root partition
 echo "Wipping root and boot partition..."
@@ -77,13 +95,20 @@ mount "${boot}" /mnt/root/boot
 echo "Installing the new rootfs..."
 tar zxf "${newrootfs_path}" -C /mnt/root
 
+# Restore fstab, network interfaces and hostname
+echo "Restoring oldrootfs configs into the newrootfs..."
+cp -vf /backup/fstab /mnt/root/etc/
+cp -vf /backup/ifcfg-eth0 /mnt/root/etc/sysconfig/network-scripts/
+cp -vf /backup/ifcfg-eth1 /mnt/root/etc/sysconfig/network-scripts/
+cp -vf /backup/network /mnt/root/etc/sysconfig/
+
 # Post migration steps
 mount --bind /dev /mnt/root/dev
 mount --bind /proc /mnt/root/proc
 mount --bind /sys /mnt/root/sys
-chroot /mnt/root grub-install /dev/sda
-chroot /mnt/root update-grub
-#TODO: Migrate IP's, HOSTNAME, etc...
+
+chroot /mnt/root grub2-install /dev/sda
+chroot /mnt/root grub2-mkconfig -o /boot/grub2/grub.cfg
 
 #Unmount all other mounts so that the ram used by
 umount /mnt/root/dev /mnt/root/proc /mnt/root/sys /mnt/root/boot 2>&1 > /dev/null
@@ -91,8 +116,10 @@ umount /mnt/root /mnt/home 2>&1 > /dev/null
 
 echo "Rebooting..."
 sleep 2
-echo 1 > /proc/sys/kernel/sysrq
-echo b > /proc/sysrq-trigger
+echo 1 > /proc/sys/kernel/sysrq	# Enable SysRq
+#echo s > /proc/sysrq-trigger	# Sync all mounted filesystems
+echo b > /proc/sysrq-trigger	# Reboot
+#echo o > /proc/sysrq-trigger	# Shutdown
 
 #This will only be run if the exec above failed
 #echo "Failed to switch_root, dropping to a shell"
